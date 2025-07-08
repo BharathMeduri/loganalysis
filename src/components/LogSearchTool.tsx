@@ -290,10 +290,21 @@ export function LogSearchTool() {
       console.log('File read successful');
       const content = e.target?.result as string;
       console.log('Content length:', content?.length);
-      setLogContent(content);
+      console.log('First 200 chars:', content?.substring(0, 200));
+      console.log('Line endings found:', {
+        '\n': (content.match(/\n/g) || []).length,
+        '\r\n': (content.match(/\r\n/g) || []).length,
+        '\r': (content.match(/\r/g) || []).length
+      });
+      
+      // Handle different line endings and count lines properly
+      const normalizedContent = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const lineCount = normalizedContent.split('\n').length;
+      
+      setLogContent(normalizedContent);
       toast({
         title: "File uploaded",
-        description: `Successfully loaded ${file.name} (${content.split('\n').length} lines)`
+        description: `Successfully loaded ${file.name} (${lineCount} lines)`
       });
     };
     
