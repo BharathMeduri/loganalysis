@@ -274,17 +274,35 @@ export function LogSearchTool() {
   }, []);
 
   const handleFileUpload = useCallback((files: FileList | null) => {
-    if (!files || files.length === 0) return;
+    console.log('handleFileUpload called with:', files);
+    
+    if (!files || files.length === 0) {
+      console.log('No files provided');
+      return;
+    }
     
     const file = files[0];
+    console.log('Processing file:', file.name, file.type, file.size);
+    
     const reader = new FileReader();
     
     reader.onload = (e) => {
+      console.log('File read successful');
       const content = e.target?.result as string;
+      console.log('Content length:', content?.length);
       setLogContent(content);
       toast({
         title: "File uploaded",
         description: `Successfully loaded ${file.name} (${content.split('\n').length} lines)`
+      });
+    };
+    
+    reader.onerror = (e) => {
+      console.error('File read error:', e);
+      toast({
+        title: "Upload failed",
+        description: "Failed to read the file. Please try again.",
+        variant: "destructive"
       });
     };
     
