@@ -52,6 +52,13 @@ export default {
 					DEFAULT: 'hsl(var(--card))',
 					foreground: 'hsl(var(--card-foreground))'
 				},
+				pattern: {
+					1: 'hsl(var(--pattern-1))',
+					2: 'hsl(var(--pattern-2))',
+					3: 'hsl(var(--pattern-3))',
+					4: 'hsl(var(--pattern-4))',
+					5: 'hsl(var(--pattern-5))'
+				},
 				sidebar: {
 					DEFAULT: 'hsl(var(--sidebar-background))',
 					foreground: 'hsl(var(--sidebar-foreground))',
@@ -63,10 +70,22 @@ export default {
 					ring: 'hsl(var(--sidebar-ring))'
 				}
 			},
+			fontFamily: {
+				'mono': ['JetBrains Mono', 'Monaco', 'Consolas', 'monospace'],
+			},
 			borderRadius: {
 				lg: 'var(--radius)',
 				md: 'calc(var(--radius) - 2px)',
 				sm: 'calc(var(--radius) - 4px)'
+			},
+			backgroundImage: {
+				'gradient-primary': 'var(--gradient-primary)',
+				'gradient-accent': 'var(--gradient-accent)',
+				'gradient-dark': 'var(--gradient-dark)',
+			},
+			boxShadow: {
+				'glow': 'var(--shadow-glow)',
+				'card-custom': 'var(--shadow-card)',
 			},
 			keyframes: {
 				'accordion-down': {
