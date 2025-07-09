@@ -407,7 +407,10 @@ export function LogSearchTool() {
               <input
                 type="file"
                 accept=".log,.txt,.json,.*"
-                onChange={(e) => handleFileUpload(e.target.files)}
+                onChange={(e) => {
+                  console.log('File input onChange triggered');
+                  handleFileUpload(e.target.files);
+                }}
                 className="hidden"
                 id="file-upload"
               />
