@@ -284,12 +284,33 @@ export function LogSearchTool() {
     const file = files[0];
     console.log('Processing file:', file.name, file.type, file.size);
     
+    // Check file size (limit to 50MB to prevent browser crashes)
+    const maxSize = 50 * 1024 * 1024; // 50MB
+    if (file.size > maxSize) {
+      toast({
+        title: "File too large",
+        description: `File size (${(file.size / 1024 / 1024).toFixed(1)}MB) exceeds the 50MB limit. Please use a smaller file.`,
+        variant: "destructive"
+      });
+      return;
+    }
+    
     const reader = new FileReader();
     
     reader.onload = (e) => {
       console.log('File read successful');
       const content = e.target?.result as string;
       console.log('Content length:', content?.length);
+      
+      if (!content || content.length === 0) {
+        toast({
+          title: "Empty file",
+          description: "The uploaded file appears to be empty or corrupted.",
+          variant: "destructive"
+        });
+        return;
+      }
+      
       console.log('First 200 chars:', content?.substring(0, 200));
       console.log('Line endings found:', {
         '\n': (content.match(/\n/g) || []).length,
@@ -299,12 +320,12 @@ export function LogSearchTool() {
       
       // Handle different line endings and count lines properly
       const normalizedContent = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-      const lineCount = normalizedContent.split('\n').length;
+      const lineCount = normalizedContent.split('\n').filter(line => line.trim() !== '').length;
       
       setLogContent(normalizedContent);
       toast({
         title: "File uploaded",
-        description: `Successfully loaded ${file.name} (${lineCount} lines)`
+        description: `Successfully loaded ${file.name} (${lineCount} lines, ${(file.size / 1024 / 1024).toFixed(1)}MB)`
       });
     };
     
@@ -312,7 +333,16 @@ export function LogSearchTool() {
       console.error('File read error:', e);
       toast({
         title: "Upload failed",
-        description: "Failed to read the file. Please try again.",
+        description: "Failed to read the file. The file might be corrupted or too large.",
+        variant: "destructive"
+      });
+    };
+    
+    reader.onabort = () => {
+      console.error('File read aborted');
+      toast({
+        title: "Upload cancelled",
+        description: "File upload was cancelled.",
         variant: "destructive"
       });
     };
