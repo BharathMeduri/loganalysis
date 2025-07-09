@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { Upload, Search, X, FileText, Download, Eye, EyeOff, Plus, Trash2, Code } from 'lucide-react';
+import { Upload, Search, X, FileText, Download, Eye, EyeOff, Plus, Trash2, Code, Split, Combine } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -55,6 +55,8 @@ export function LogSearchTool() {
   const [searchMode, setSearchMode] = useState<'simple' | 'logical'>('simple');
   const [logicalGroups, setLogicalGroups] = useState<LogicalGroup[]>([]);
   const [globalOperator, setGlobalOperator] = useState<'AND' | 'OR'>('AND');
+  const [uploadedChunks, setUploadedChunks] = useState<string[]>([]);
+  const [isMultiFileMode, setIsMultiFileMode] = useState(false);
   const { toast } = useToast();
 
   const addPattern = useCallback(() => {
@@ -273,6 +275,111 @@ export function LogSearchTool() {
     return result;
   }, []);
 
+  // File splitting functionality
+  const splitFileIntoChunks = useCallback((file: File, chunkSizeMB: number = 10): Promise<Blob[]> => {
+    return new Promise((resolve) => {
+      const chunkSize = chunkSizeMB * 1024 * 1024; // Convert MB to bytes
+      const chunks: Blob[] = [];
+      let offset = 0;
+
+      while (offset < file.size) {
+        const chunk = file.slice(offset, offset + chunkSize);
+        chunks.push(chunk);
+        offset += chunkSize;
+      }
+
+      resolve(chunks);
+    });
+  }, []);
+
+  const handleLargeFileUpload = useCallback(async (file: File) => {
+    try {
+      toast({
+        title: "Splitting large file",
+        description: `Splitting ${file.name} into smaller chunks...`
+      });
+
+      const chunks = await splitFileIntoChunks(file, 10); // 10MB chunks
+      const chunkContents: string[] = [];
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const reader = new FileReader();
+        
+        const content = await new Promise<string>((resolve, reject) => {
+          reader.onload = (e) => resolve(e.target?.result as string || '');
+          reader.onerror = reject;
+          reader.readAsText(chunk);
+        });
+
+        chunkContents.push(content);
+      }
+
+      setUploadedChunks(chunkContents);
+      const combinedContent = chunkContents.join('');
+      const normalizedContent = combinedContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const lineCount = normalizedContent.split('\n').filter(line => line.trim() !== '').length;
+      
+      setLogContent(normalizedContent);
+      toast({
+        title: "Large file processed",
+        description: `Successfully processed ${file.name} in ${chunks.length} chunks (${lineCount} lines, ${(file.size / 1024 / 1024).toFixed(1)}MB)`
+      });
+    } catch (error) {
+      console.error('Error processing large file:', error);
+      toast({
+        title: "Processing failed",
+        description: "Failed to process the large file. Please try again.",
+        variant: "destructive"
+      });
+    }
+  }, [splitFileIntoChunks, toast]);
+
+  const handleMultipleFiles = useCallback((files: FileList) => {
+    const fileArray = Array.from(files);
+    const chunkContents: string[] = [];
+    let processedFiles = 0;
+
+    toast({
+      title: "Processing multiple files",
+      description: `Processing ${fileArray.length} files...`
+    });
+
+    fileArray.forEach((file, index) => {
+      const reader = new FileReader();
+      
+      reader.onload = (e) => {
+        const content = e.target?.result as string || '';
+        chunkContents[index] = content;
+        processedFiles++;
+
+        if (processedFiles === fileArray.length) {
+          const combinedContent = chunkContents.filter(Boolean).join('\n');
+          const normalizedContent = combinedContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+          const lineCount = normalizedContent.split('\n').filter(line => line.trim() !== '').length;
+          
+          setUploadedChunks(chunkContents.filter(Boolean));
+          setLogContent(normalizedContent);
+          
+          toast({
+            title: "Multiple files processed",
+            description: `Successfully combined ${fileArray.length} files (${lineCount} lines)`
+          });
+        }
+      };
+      
+      reader.onerror = () => {
+        toast({
+          title: "File processing failed",
+          description: `Failed to process ${file.name}`,
+          variant: "destructive"
+        });
+      };
+      
+      reader.readAsText(file);
+    });
+  }, [toast]);
+
   const handleFileUpload = useCallback((files: FileList | null) => {
     console.log('handleFileUpload called with:', files);
     
@@ -280,18 +387,24 @@ export function LogSearchTool() {
       console.log('No files provided');
       return;
     }
+
+    // Handle multiple files if in multi-file mode or multiple files selected
+    if (files.length > 1 || isMultiFileMode) {
+      handleMultipleFiles(files);
+      return;
+    }
     
     const file = files[0];
     console.log('Processing file:', file.name, file.type, file.size);
     
-    // Check file size (limit to 50MB to prevent browser crashes)
+    // Check file size (limit to 50MB for single file, offer splitting for larger files)
     const maxSize = 50 * 1024 * 1024; // 50MB
     if (file.size > maxSize) {
       toast({
-        title: "File too large",
-        description: `File size (${(file.size / 1024 / 1024).toFixed(1)}MB) exceeds the 50MB limit. Please use a smaller file.`,
-        variant: "destructive"
+        title: "Large file detected",
+        description: `File size (${(file.size / 1024 / 1024).toFixed(1)}MB) is large. Processing in chunks...`
       });
+      handleLargeFileUpload(file);
       return;
     }
     
@@ -348,7 +461,41 @@ export function LogSearchTool() {
     };
     
     reader.readAsText(file);
+  }, [toast, isMultiFileMode, handleMultipleFiles, handleLargeFileUpload]);
+
+  const clearUploadedContent = useCallback(() => {
+    setLogContent('');
+    setUploadedChunks([]);
+    toast({
+      title: "Content cleared",
+      description: "All uploaded content has been cleared."
+    });
   }, [toast]);
+
+  const exportSplitFiles = useCallback(() => {
+    if (uploadedChunks.length === 0) {
+      toast({
+        title: "No chunks to export",
+        description: "No file chunks available for export."
+      });
+      return;
+    }
+
+    uploadedChunks.forEach((chunk, index) => {
+      const blob = new Blob([chunk], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `log-chunk-${index + 1}.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    toast({
+      title: "Chunks exported",
+      description: `Exported ${uploadedChunks.length} file chunks.`
+    });
+  }, [uploadedChunks, toast]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -432,11 +579,16 @@ export function LogSearchTool() {
               onDrop={handleDrop}
             >
               <Upload className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-              <p className="text-lg font-medium mb-2">Drop log files here or click to browse</p>
-              <p className="text-sm text-muted-foreground mb-4">Supports .log, .txt, and other text files</p>
+              <p className="text-lg font-medium mb-2">
+                {isMultiFileMode ? 'Drop multiple files here or click to browse' : 'Drop log files here or click to browse'}
+              </p>
+              <p className="text-sm text-muted-foreground mb-4">
+                {isMultiFileMode ? 'Select multiple files to combine them' : 'Large files will be automatically split into chunks'}
+              </p>
               <input
                 type="file"
                 accept=".log,.txt,.json,.*"
+                multiple={isMultiFileMode}
                 onChange={(e) => {
                   console.log('File input onChange triggered');
                   handleFileUpload(e.target.files);
@@ -444,12 +596,46 @@ export function LogSearchTool() {
                 className="hidden"
                 id="file-upload"
               />
-              <Button asChild variant="outline">
-                <label htmlFor="file-upload" className="cursor-pointer">
-                  Browse Files
-                </label>
-              </Button>
+              <div className="flex gap-2">
+                <Button asChild variant="outline">
+                  <label htmlFor="file-upload" className="cursor-pointer">
+                    Browse Files
+                  </label>
+                </Button>
+                <Button 
+                  variant="outline" 
+                  onClick={() => setIsMultiFileMode(!isMultiFileMode)}
+                  className={isMultiFileMode ? 'bg-primary/10 border-primary' : ''}
+                >
+                  <Split className="h-4 w-4 mr-2" />
+                  {isMultiFileMode ? 'Multi-file Mode' : 'Single File Mode'}
+                </Button>
+              </div>
             </div>
+
+            {/* File Management Controls */}
+            {(logContent || uploadedChunks.length > 0) && (
+              <div className="flex gap-2 p-4 bg-muted/30 rounded-lg">
+                <div className="flex-1 text-sm text-muted-foreground">
+                  {uploadedChunks.length > 0 && (
+                    <span>Content loaded from {uploadedChunks.length} chunk(s) • </span>
+                  )}
+                  {logContent.split('\n').filter(line => line.trim() !== '').length} lines loaded
+                </div>
+                <div className="flex gap-2">
+                  {uploadedChunks.length > 0 && (
+                    <Button onClick={exportSplitFiles} variant="outline" size="sm">
+                      <Download className="h-4 w-4 mr-2" />
+                      Export Chunks
+                    </Button>
+                  )}
+                  <Button onClick={clearUploadedContent} variant="outline" size="sm">
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Clear Content
+                  </Button>
+                </div>
+              </div>
+            )}
 
             {/* Text Input */}
             <div className="space-y-2">
