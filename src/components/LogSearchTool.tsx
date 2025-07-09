@@ -337,7 +337,7 @@ export function LogSearchTool() {
 
   const handleMultipleFiles = useCallback((files: FileList) => {
     const fileArray = Array.from(files);
-    const chunkContents: string[] = [];
+    let combinedContent = '';
     let processedFiles = 0;
 
     toast({
@@ -345,21 +345,28 @@ export function LogSearchTool() {
       description: `Processing ${fileArray.length} files...`
     });
 
-    fileArray.forEach((file, index) => {
+    const processFile = (file: File, index: number) => {
       const reader = new FileReader();
       
       reader.onload = (e) => {
         const content = e.target?.result as string || '';
-        chunkContents[index] = content;
+        console.log(`File ${index + 1} processed:`, file.name, content.length, 'chars');
+        
+        if (content) {
+          combinedContent += (combinedContent ? '\n' : '') + content;
+        }
+        
         processedFiles++;
 
         if (processedFiles === fileArray.length) {
-          const combinedContent = chunkContents.filter(Boolean).join('\n');
           const normalizedContent = combinedContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
           const lineCount = normalizedContent.split('\n').filter(line => line.trim() !== '').length;
           
-          setUploadedChunks(chunkContents.filter(Boolean));
+          console.log('Combined content length:', normalizedContent.length);
+          console.log('Total lines:', lineCount);
+          
           setLogContent(normalizedContent);
+          setUploadedChunks([normalizedContent]);
           
           toast({
             title: "Multiple files processed",
@@ -368,24 +375,41 @@ export function LogSearchTool() {
         }
       };
       
-      reader.onerror = () => {
+      reader.onerror = (error) => {
+        console.error(`Error reading file ${file.name}:`, error);
         toast({
           title: "File processing failed",
           description: `Failed to process ${file.name}`,
           variant: "destructive"
         });
+        processedFiles++;
       };
       
       reader.readAsText(file);
-    });
+    };
+
+    fileArray.forEach(processFile);
   }, [toast]);
 
   const handleFileUpload = useCallback((files: FileList | null) => {
     console.log('handleFileUpload called with:', files);
+    console.log('Files length:', files?.length);
+    console.log('isMultiFileMode:', isMultiFileMode);
     
     if (!files || files.length === 0) {
       console.log('No files provided');
       return;
+    }
+
+    // Log each file for debugging
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      console.log(`File ${i}:`, {
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        lastModified: file.lastModified
+      });
     }
 
     // Handle multiple files if in multi-file mode or multiple files selected
@@ -395,7 +419,7 @@ export function LogSearchTool() {
     }
     
     const file = files[0];
-    console.log('Processing file:', file.name, file.type, file.size);
+    console.log('Processing single file:', file.name, file.type, file.size);
     
     // Check file size (limit to 50MB for single file, offer splitting for larger files)
     const maxSize = 50 * 1024 * 1024; // 50MB
