@@ -1,5 +1,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { Upload, Search, X, FileText, Download, Eye, EyeOff, Plus, Trash2, Code, Split, Combine } from 'lucide-react';
+import * as pako from 'pako';
+import { untar } from 'js-untar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -275,6 +277,100 @@ export function LogSearchTool() {
     return result;
   }, []);
 
+  // File decompression functions
+  const isCompressedFile = useCallback((fileName: string): boolean => {
+    const compressedExtensions = ['.gz', '.tar.gz', '.tar', '.tgz'];
+    return compressedExtensions.some(ext => fileName.toLowerCase().endsWith(ext));
+  }, []);
+
+  const decompressGzipFile = useCallback(async (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const compressed = new Uint8Array(reader.result as ArrayBuffer);
+          const decompressed = pako.ungzip(compressed, { to: 'string' });
+          resolve(decompressed);
+        } catch (error) {
+          reject(new Error(`Failed to decompress gzip file: ${error}`));
+        }
+      };
+      reader.onerror = () => reject(new Error('Failed to read compressed file'));
+      reader.readAsArrayBuffer(file);
+    });
+  }, []);
+
+  const decompressTarFile = useCallback(async (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const arrayBuffer = reader.result as ArrayBuffer;
+          const files = await untar(arrayBuffer);
+          
+          // Combine all text files from the tar archive
+          let combinedContent = '';
+          for (const tarFile of files) {
+            if (tarFile.type === '0') { // Regular file
+              const decoder = new TextDecoder();
+              const content = decoder.decode(tarFile.buffer);
+              combinedContent += `\n--- ${tarFile.name} ---\n${content}`;
+            }
+          }
+          
+          resolve(combinedContent);
+        } catch (error) {
+          reject(new Error(`Failed to decompress tar file: ${error}`));
+        }
+      };
+      reader.onerror = () => reject(new Error('Failed to read tar file'));
+      reader.readAsArrayBuffer(file);
+    });
+  }, []);
+
+  const decompressTarGzFile = useCallback(async (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const compressed = new Uint8Array(reader.result as ArrayBuffer);
+          const decompressed = pako.ungzip(compressed);
+          const files = await untar(decompressed.buffer);
+          
+          // Combine all text files from the tar.gz archive
+          let combinedContent = '';
+          for (const tarFile of files) {
+            if (tarFile.type === '0') { // Regular file
+              const decoder = new TextDecoder();
+              const content = decoder.decode(tarFile.buffer);
+              combinedContent += `\n--- ${tarFile.name} ---\n${content}`;
+            }
+          }
+          
+          resolve(combinedContent);
+        } catch (error) {
+          reject(new Error(`Failed to decompress tar.gz file: ${error}`));
+        }
+      };
+      reader.onerror = () => reject(new Error('Failed to read compressed file'));
+      reader.readAsArrayBuffer(file);
+    });
+  }, []);
+
+  const handleCompressedFile = useCallback(async (file: File): Promise<string> => {
+    const fileName = file.name.toLowerCase();
+    
+    if (fileName.endsWith('.tar.gz') || fileName.endsWith('.tgz')) {
+      return await decompressTarGzFile(file);
+    } else if (fileName.endsWith('.gz')) {
+      return await decompressGzipFile(file);
+    } else if (fileName.endsWith('.tar')) {
+      return await decompressTarFile(file);
+    } else {
+      throw new Error('Unsupported compressed file format');
+    }
+  }, [decompressGzipFile, decompressTarFile, decompressTarGzFile]);
+
   // File splitting functionality
   const splitFileIntoChunks = useCallback((file: File, chunkSizeMB: number = 10): Promise<Blob[]> => {
     return new Promise((resolve) => {
@@ -391,7 +487,7 @@ export function LogSearchTool() {
     fileArray.forEach(processFile);
   }, [toast]);
 
-  const handleFileUpload = useCallback((files: FileList | null) => {
+  const handleFileUpload = useCallback(async (files: FileList | null) => {
     console.log('handleFileUpload called with:', files);
     console.log('Files length:', files?.length);
     console.log('isMultiFileMode:', isMultiFileMode);
@@ -420,6 +516,36 @@ export function LogSearchTool() {
     
     const file = files[0];
     console.log('Processing single file:', file.name, file.type, file.size);
+    
+    // Check if file is compressed
+    if (isCompressedFile(file.name)) {
+      console.log('Compressed file detected:', file.name);
+      toast({
+        title: "Compressed file detected",
+        description: `Decompressing ${file.name}...`
+      });
+      
+      try {
+        const decompressedContent = await handleCompressedFile(file);
+        const normalizedContent = decompressedContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        const lineCount = normalizedContent.split('\n').filter(line => line.trim() !== '').length;
+        
+        setLogContent(normalizedContent);
+        toast({
+          title: "Compressed file processed",
+          description: `Successfully decompressed ${file.name} (${lineCount} lines)`
+        });
+        return;
+      } catch (error) {
+        console.error('Error decompressing file:', error);
+        toast({
+          title: "Decompression failed",
+          description: `Failed to decompress ${file.name}: ${error.message}`,
+          variant: "destructive"
+        });
+        return;
+      }
+    }
     
     // Check file size (limit to 50MB for single file, offer splitting for larger files)
     const maxSize = 50 * 1024 * 1024; // 50MB
@@ -611,7 +737,7 @@ export function LogSearchTool() {
               </p>
               <input
                 type="file"
-                accept=".log,.txt,.json,.*"
+                accept=".log,.txt,.json,.gz,.tar.gz,.tar,.tgz,.*"
                 multiple={isMultiFileMode}
                 onChange={(e) => {
                   console.log('File input onChange triggered');
