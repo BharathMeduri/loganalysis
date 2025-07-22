@@ -352,107 +352,82 @@ export function LogSearchTool() {
   }, [toast]);
 
   const decompressTarGzFile = useCallback(async (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      // Try to use Web Worker for better performance
-      if (typeof Worker !== 'undefined') {
-        try {
-          const worker = new Worker('/decompress-worker.js', { type: 'module' });
-          
-          worker.onmessage = (e) => {
-            const { type, data, message, error } = e.data;
-            
-            if (type === 'success') {
-              worker.terminate();
-              resolve(data);
-            } else if (type === 'progress') {
-              toast({
-                title: "Processing...",
-                description: message
-              });
-            } else if (type === 'error') {
-              worker.terminate();
-              reject(new Error(error));
-            }
-          };
-          
-          worker.onerror = () => {
-            worker.terminate();
-            // Fallback to main thread processing
-            decompressTarGzFileMainThread(file).then(resolve).catch(reject);
-          };
-          
-          const reader = new FileReader();
-          reader.onload = () => {
-            const compressed = new Uint8Array(reader.result as ArrayBuffer);
-            worker.postMessage({ 
-              type: 'decompress', 
-              data: compressed, 
-              fileType: 'tar.gz' 
-            });
-          };
-          reader.readAsArrayBuffer(file);
-          
-          return;
-        } catch (error) {
-          console.warn('Web Worker not available, falling back to main thread');
-        }
-      }
-      
-      // Fallback to main thread processing
-      decompressTarGzFileMainThread(file).then(resolve).catch(reject);
-    });
-  }, [toast]);
+    // Add size limit check for very large files
+    const maxCompressedSize = 100 * 1024 * 1024; // 100MB compressed limit
+    if (file.size > maxCompressedSize) {
+      throw new Error(`File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum supported size is 100MB.`);
+    }
 
-  const decompressTarGzFileMainThread = useCallback(async (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = async () => {
         try {
           const compressed = new Uint8Array(reader.result as ArrayBuffer);
           
-          // Show progress toast for decompression
           toast({
             title: "Decompressing...",
             description: "Extracting gzip archive..."
           });
           
-          // Use setTimeout to yield control to the main thread
-          await new Promise(resolve => setTimeout(resolve, 50));
+          // Yield control using requestIdleCallback or setTimeout
+          await new Promise(resolve => {
+            if (window.requestIdleCallback) {
+              requestIdleCallback(() => resolve(undefined));
+            } else {
+              setTimeout(resolve, 100);
+            }
+          });
           
           const decompressed = pako.ungzip(compressed);
           
-          // Show progress for tar extraction
           toast({
             title: "Extracting files...",
             description: "Processing tar archive..."
           });
           
-          await new Promise(resolve => setTimeout(resolve, 50));
+          await new Promise(resolve => {
+            if (window.requestIdleCallback) {
+              requestIdleCallback(() => resolve(undefined));
+            } else {
+              setTimeout(resolve, 100);
+            }
+          });
           
           const files = await untar(decompressed.buffer);
           
-          // Process files in smaller batches to prevent blocking
-          let combinedContent = '';
-          const batchSize = 3; // Smaller batch size for main thread
+          // Check extracted content size
+          const totalFiles = files.filter(f => f.type === '0').length;
+          if (totalFiles > 1000) {
+            throw new Error(`Archive contains too many files (${totalFiles}). Maximum supported is 1000 files.`);
+          }
           
-          for (let i = 0; i < files.length; i += batchSize) {
-            const batch = files.slice(i, i + batchSize);
-            
-            for (const tarFile of batch) {
-              if (tarFile.type === '0') { // Regular file
-                const decoder = new TextDecoder();
-                const content = decoder.decode(tarFile.buffer);
-                combinedContent += `\n--- ${tarFile.name} ---\n${content}`;
+          let combinedContent = '';
+          let processedFiles = 0;
+          
+          // Process one file at a time with yields
+          for (const tarFile of files) {
+            if (tarFile.type === '0') { // Regular file
+              const decoder = new TextDecoder();
+              const content = decoder.decode(tarFile.buffer);
+              combinedContent += `\n--- ${tarFile.name} ---\n${content}`;
+              
+              processedFiles++;
+              
+              // Yield control after every file
+              if (processedFiles % 1 === 0) {
+                toast({
+                  title: "Processing files...",
+                  description: `Processed ${processedFiles}/${totalFiles} files...`
+                });
+                
+                await new Promise(resolve => {
+                  if (window.requestIdleCallback) {
+                    requestIdleCallback(() => resolve(undefined));
+                  } else {
+                    setTimeout(resolve, 10);
+                  }
+                });
               }
-            }
-            
-            // Yield control after each batch
-            if (i + batchSize < files.length) {
-              toast({
-                title: "Processing files...",
-                description: `Processed ${Math.min(i + batchSize, files.length)}/${files.length} files...`
-              });
-              await new Promise(resolve => setTimeout(resolve, 20));
             }
           }
           
@@ -629,6 +604,18 @@ export function LogSearchTool() {
     // Check if file is compressed
     if (isCompressedFile(file.name)) {
       console.log('Compressed file detected:', file.name);
+      
+      // Check file size before processing
+      const maxSize = 100 * 1024 * 1024; // 100MB limit for compressed files
+      if (file.size > maxSize) {
+        toast({
+          title: "File too large",
+          description: `Compressed file size (${(file.size / 1024 / 1024).toFixed(1)}MB) exceeds the 100MB limit.`,
+          variant: "destructive"
+        });
+        return;
+      }
+      
       toast({
         title: "Compressed file detected",
         description: `Decompressing ${file.name}...`
@@ -638,6 +625,17 @@ export function LogSearchTool() {
         const decompressedContent = await handleCompressedFile(file);
         const normalizedContent = decompressedContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
         const lineCount = normalizedContent.split('\n').filter(line => line.trim() !== '').length;
+        
+        // Check if decompressed content is too large
+        const maxDecompressedSize = 500 * 1024 * 1024; // 500MB decompressed limit
+        if (normalizedContent.length > maxDecompressedSize) {
+          toast({
+            title: "Decompressed content too large",
+            description: `Decompressed content (${(normalizedContent.length / 1024 / 1024).toFixed(1)}MB) exceeds the 500MB limit.`,
+            variant: "destructive"
+          });
+          return;
+        }
         
         setLogContent(normalizedContent);
         toast({
