@@ -312,29 +312,32 @@ export function LogSearchTool() {
             description: "Processing tar file..."
           });
           
-          await new Promise(resolve => setTimeout(resolve, 10));
+          await new Promise(resolve => setTimeout(resolve, 50));
           
           const files = await untar(arrayBuffer);
           
-          // Combine all text files from the tar archive
+          // Process files in smaller batches to prevent blocking
           let combinedContent = '';
-          let processedFiles = 0;
+          const batchSize = 5; // Process 5 files at a time
           
-          for (const tarFile of files) {
-            if (tarFile.type === '0') { // Regular file
-              const decoder = new TextDecoder();
-              const content = decoder.decode(tarFile.buffer);
-              combinedContent += `\n--- ${tarFile.name} ---\n${content}`;
-              
-              processedFiles++;
-              // Yield control periodically during large extractions
-              if (processedFiles % 10 === 0) {
-                toast({
-                  title: "Processing files...",
-                  description: `Processed ${processedFiles}/${files.length} files...`
-                });
-                await new Promise(resolve => setTimeout(resolve, 5));
+          for (let i = 0; i < files.length; i += batchSize) {
+            const batch = files.slice(i, i + batchSize);
+            
+            for (const tarFile of batch) {
+              if (tarFile.type === '0') { // Regular file
+                const decoder = new TextDecoder();
+                const content = decoder.decode(tarFile.buffer);
+                combinedContent += `\n--- ${tarFile.name} ---\n${content}`;
               }
+            }
+            
+            // Yield control after each batch
+            if (i + batchSize < files.length) {
+              toast({
+                title: "Processing files...",
+                description: `Processed ${Math.min(i + batchSize, files.length)}/${files.length} files...`
+              });
+              await new Promise(resolve => setTimeout(resolve, 10));
             }
           }
           
@@ -350,6 +353,58 @@ export function LogSearchTool() {
 
   const decompressTarGzFile = useCallback(async (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
+      // Try to use Web Worker for better performance
+      if (typeof Worker !== 'undefined') {
+        try {
+          const worker = new Worker('/decompress-worker.js', { type: 'module' });
+          
+          worker.onmessage = (e) => {
+            const { type, data, message, error } = e.data;
+            
+            if (type === 'success') {
+              worker.terminate();
+              resolve(data);
+            } else if (type === 'progress') {
+              toast({
+                title: "Processing...",
+                description: message
+              });
+            } else if (type === 'error') {
+              worker.terminate();
+              reject(new Error(error));
+            }
+          };
+          
+          worker.onerror = () => {
+            worker.terminate();
+            // Fallback to main thread processing
+            decompressTarGzFileMainThread(file).then(resolve).catch(reject);
+          };
+          
+          const reader = new FileReader();
+          reader.onload = () => {
+            const compressed = new Uint8Array(reader.result as ArrayBuffer);
+            worker.postMessage({ 
+              type: 'decompress', 
+              data: compressed, 
+              fileType: 'tar.gz' 
+            });
+          };
+          reader.readAsArrayBuffer(file);
+          
+          return;
+        } catch (error) {
+          console.warn('Web Worker not available, falling back to main thread');
+        }
+      }
+      
+      // Fallback to main thread processing
+      decompressTarGzFileMainThread(file).then(resolve).catch(reject);
+    });
+  }, [toast]);
+
+  const decompressTarGzFileMainThread = useCallback(async (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = async () => {
         try {
@@ -362,7 +417,7 @@ export function LogSearchTool() {
           });
           
           // Use setTimeout to yield control to the main thread
-          await new Promise(resolve => setTimeout(resolve, 10));
+          await new Promise(resolve => setTimeout(resolve, 50));
           
           const decompressed = pako.ungzip(compressed);
           
@@ -372,29 +427,32 @@ export function LogSearchTool() {
             description: "Processing tar archive..."
           });
           
-          await new Promise(resolve => setTimeout(resolve, 10));
+          await new Promise(resolve => setTimeout(resolve, 50));
           
           const files = await untar(decompressed.buffer);
           
-          // Combine all text files from the tar.gz archive
+          // Process files in smaller batches to prevent blocking
           let combinedContent = '';
-          let processedFiles = 0;
+          const batchSize = 3; // Smaller batch size for main thread
           
-          for (const tarFile of files) {
-            if (tarFile.type === '0') { // Regular file
-              const decoder = new TextDecoder();
-              const content = decoder.decode(tarFile.buffer);
-              combinedContent += `\n--- ${tarFile.name} ---\n${content}`;
-              
-              processedFiles++;
-              // Yield control periodically during large extractions
-              if (processedFiles % 10 === 0) {
-                toast({
-                  title: "Processing files...",
-                  description: `Processed ${processedFiles}/${files.length} files...`
-                });
-                await new Promise(resolve => setTimeout(resolve, 5));
+          for (let i = 0; i < files.length; i += batchSize) {
+            const batch = files.slice(i, i + batchSize);
+            
+            for (const tarFile of batch) {
+              if (tarFile.type === '0') { // Regular file
+                const decoder = new TextDecoder();
+                const content = decoder.decode(tarFile.buffer);
+                combinedContent += `\n--- ${tarFile.name} ---\n${content}`;
               }
+            }
+            
+            // Yield control after each batch
+            if (i + batchSize < files.length) {
+              toast({
+                title: "Processing files...",
+                description: `Processed ${Math.min(i + batchSize, files.length)}/${files.length} files...`
+              });
+              await new Promise(resolve => setTimeout(resolve, 20));
             }
           }
           
