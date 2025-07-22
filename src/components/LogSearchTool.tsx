@@ -306,15 +306,35 @@ export function LogSearchTool() {
       reader.onload = async () => {
         try {
           const arrayBuffer = reader.result as ArrayBuffer;
+          
+          toast({
+            title: "Extracting tar archive...",
+            description: "Processing tar file..."
+          });
+          
+          await new Promise(resolve => setTimeout(resolve, 10));
+          
           const files = await untar(arrayBuffer);
           
           // Combine all text files from the tar archive
           let combinedContent = '';
+          let processedFiles = 0;
+          
           for (const tarFile of files) {
             if (tarFile.type === '0') { // Regular file
               const decoder = new TextDecoder();
               const content = decoder.decode(tarFile.buffer);
               combinedContent += `\n--- ${tarFile.name} ---\n${content}`;
+              
+              processedFiles++;
+              // Yield control periodically during large extractions
+              if (processedFiles % 10 === 0) {
+                toast({
+                  title: "Processing files...",
+                  description: `Processed ${processedFiles}/${files.length} files...`
+                });
+                await new Promise(resolve => setTimeout(resolve, 5));
+              }
             }
           }
           
@@ -326,7 +346,7 @@ export function LogSearchTool() {
       reader.onerror = () => reject(new Error('Failed to read tar file'));
       reader.readAsArrayBuffer(file);
     });
-  }, []);
+  }, [toast]);
 
   const decompressTarGzFile = useCallback(async (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -334,16 +354,47 @@ export function LogSearchTool() {
       reader.onload = async () => {
         try {
           const compressed = new Uint8Array(reader.result as ArrayBuffer);
+          
+          // Show progress toast for decompression
+          toast({
+            title: "Decompressing...",
+            description: "Extracting gzip archive..."
+          });
+          
+          // Use setTimeout to yield control to the main thread
+          await new Promise(resolve => setTimeout(resolve, 10));
+          
           const decompressed = pako.ungzip(compressed);
+          
+          // Show progress for tar extraction
+          toast({
+            title: "Extracting files...",
+            description: "Processing tar archive..."
+          });
+          
+          await new Promise(resolve => setTimeout(resolve, 10));
+          
           const files = await untar(decompressed.buffer);
           
           // Combine all text files from the tar.gz archive
           let combinedContent = '';
+          let processedFiles = 0;
+          
           for (const tarFile of files) {
             if (tarFile.type === '0') { // Regular file
               const decoder = new TextDecoder();
               const content = decoder.decode(tarFile.buffer);
               combinedContent += `\n--- ${tarFile.name} ---\n${content}`;
+              
+              processedFiles++;
+              // Yield control periodically during large extractions
+              if (processedFiles % 10 === 0) {
+                toast({
+                  title: "Processing files...",
+                  description: `Processed ${processedFiles}/${files.length} files...`
+                });
+                await new Promise(resolve => setTimeout(resolve, 5));
+              }
             }
           }
           
@@ -355,7 +406,7 @@ export function LogSearchTool() {
       reader.onerror = () => reject(new Error('Failed to read compressed file'));
       reader.readAsArrayBuffer(file);
     });
-  }, []);
+  }, [toast]);
 
   const handleCompressedFile = useCallback(async (file: File): Promise<string> => {
     const fileName = file.name.toLowerCase();
