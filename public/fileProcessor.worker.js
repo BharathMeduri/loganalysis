@@ -1,13 +1,94 @@
 
-// Web Worker for background file processing
+// Enhanced Web Worker for background file processing with multi-file support
 importScripts('https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js');
 
 class FileProcessor {
   constructor() {
     this.isProcessing = false;
+    this.shouldCancel = false;
   }
 
-  async processFile(file, options = {}) {
+  async processFiles(files, options = {}) {
+    this.shouldCancel = false;
+    
+    if (files.length === 1) {
+      return await this.processSingleFile(files[0], options);
+    }
+    
+    return await this.processMultipleFiles(files, options);
+  }
+
+  async processMultipleFiles(files, options) {
+    const { onProgress } = options;
+    let combinedContent = '';
+    const results = [];
+    
+    try {
+      this.isProcessing = true;
+      
+      for (let i = 0; i < files.length; i++) {
+        if (this.shouldCancel) {
+          throw new Error('Processing cancelled');
+        }
+        
+        const file = files[i];
+        const fileProgress = (i / files.length) * 100;
+        
+        if (onProgress) {
+          onProgress({ 
+            stage: 'reading', 
+            progress: fileProgress,
+            currentFile: file.name,
+            fileIndex: i + 1,
+            totalFiles: files.length
+          });
+        }
+        
+        const result = await this.processSingleFile(file, {
+          onProgress: (progress) => {
+            if (onProgress) {
+              onProgress({
+                ...progress,
+                currentFile: file.name,
+                fileIndex: i + 1,
+                totalFiles: files.length,
+                progress: fileProgress + (progress.progress / files.length)
+              });
+            }
+          }
+        });
+        
+        results.push({ name: file.name, ...result });
+        combinedContent += (combinedContent ? '\n' : '') + result.content;
+      }
+      
+      return { 
+        content: combinedContent, 
+        type: 'multi-file',
+        files: results
+      };
+    } catch (error) {
+      throw new Error(`Multi-file processing failed: ${error.message}`);
+    } finally {
+      this.isProcessing = false;
+    }
+  }
+
+  async processSingleFile(file, options = {}) {
+    const { onProgress } = options;
+    
+    // Check file size and warn for large files
+    const fileSizeMB = file.size / (1024 * 1024);
+    if (fileSizeMB > 100) {
+      if (onProgress) {
+        onProgress({ 
+          stage: 'reading', 
+          progress: 0,
+          warning: `Large file detected (${fileSizeMB.toFixed(1)}MB). Processing may take longer.`
+        });
+      }
+    }
+    
     try {
       this.isProcessing = true;
       
@@ -53,8 +134,7 @@ class FileProcessor {
             resolve({ content, type: 'tar' });
           } else {
             // Handle gzip files
-            const decoder = new TextDecoder();
-            const content = decoder.decode(decompressed);
+            const content = await this.streamDecode(decompressed, onProgress);
             resolve({ content, type: 'gzip' });
           }
         } catch (error) {
@@ -67,8 +147,36 @@ class FileProcessor {
     });
   }
 
+  async streamDecode(data, onProgress) {
+    const decoder = new TextDecoder();
+    const chunkSize = 64 * 1024; // 64KB chunks
+    let result = '';
+    
+    for (let i = 0; i < data.length; i += chunkSize) {
+      if (this.shouldCancel) {
+        throw new Error('Processing cancelled');
+      }
+      
+      const chunk = data.slice(i, Math.min(i + chunkSize, data.length));
+      result += decoder.decode(chunk, { stream: true });
+      
+      if (onProgress) {
+        onProgress({ 
+          stage: 'decompressing', 
+          progress: (i / data.length) * 100 
+        });
+      }
+      
+      // Yield control to prevent blocking
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    
+    // Finalize decode
+    result += decoder.decode();
+    return result;
+  }
+
   async decompressInChunks(compressed, onProgress) {
-    // Use pako for decompression
     try {
       const decompressed = pako.ungzip(compressed);
       if (onProgress) {
@@ -81,24 +189,13 @@ class FileProcessor {
   }
 
   async extractTarContents(tarData, onProgress) {
-    // Simple tar extraction - this is a basic implementation
-    // In production, you'd use a proper tar library
-    const decoder = new TextDecoder();
-    let content = '';
+    const content = await this.streamDecode(tarData, onProgress);
     
-    try {
-      // For now, just decode the tar data as text
-      // This is simplified - real tar parsing would be more complex
-      content = decoder.decode(tarData);
-      
-      if (onProgress) {
-        onProgress({ stage: 'extracting', progress: 100 });
-      }
-      
-      return content;
-    } catch (error) {
-      throw new Error(`Tar extraction failed: ${error.message}`);
+    if (onProgress) {
+      onProgress({ stage: 'extracting', progress: 100 });
     }
+    
+    return content;
   }
 
   async processRegularFile(file, options) {
@@ -125,6 +222,10 @@ class FileProcessor {
       reader.readAsText(file);
     });
   }
+
+  cancel() {
+    this.shouldCancel = true;
+  }
 }
 
 const processor = new FileProcessor();
@@ -135,8 +236,8 @@ self.onmessage = async (e) => {
   
   try {
     switch (type) {
-      case 'PROCESS_FILE':
-        const result = await processor.processFile(data.file, {
+      case 'PROCESS_FILES':
+        const result = await processor.processFiles(data.files, {
           onProgress: (progress) => {
             self.postMessage({
               type: 'PROGRESS',
@@ -154,7 +255,7 @@ self.onmessage = async (e) => {
         break;
         
       case 'CANCEL':
-        processor.isProcessing = false;
+        processor.cancel();
         self.postMessage({
           type: 'CANCELLED',
           id

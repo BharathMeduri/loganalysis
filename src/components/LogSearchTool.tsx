@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useMemo } from 'react';
-import { Upload, Search, X, FileText, Download, Eye, EyeOff, Plus, Trash2, Code, Split } from 'lucide-react';
+import { Upload, Search, X, FileText, Download, Eye, EyeOff, Plus, Trash2, Code, Split, AlertTriangle, Play, Pause } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -12,9 +12,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Progress } from '@/components/ui/progress';
 import { useToast } from '@/hooks/use-toast';
 import { useFileProcessor } from '@/hooks/useFileProcessor';
-import { useStreamingSearch } from '@/hooks/useStreamingSearch';
+import { useSearchController } from '@/hooks/useSearchController';
+import { useContentManager } from '@/hooks/useContentManager';
 import { ProcessingNotification } from '@/components/ProcessingNotification';
 import { VirtualScrollResults } from '@/components/VirtualScrollResults';
+import { FileSizeWarning } from '@/components/FileSizeWarning';
 
 interface SearchPattern {
   id: string;
@@ -24,33 +26,25 @@ interface SearchPattern {
   color: string;
 }
 
-interface LogicalGroup {
-  id: string;
-  operator: 'AND' | 'OR';
-  patterns: string[];
-  isEnabled: boolean;
-}
-
 const PATTERN_COLORS = [
   'pattern-1', 'pattern-2', 'pattern-3', 'pattern-4', 'pattern-5'
 ];
 
 export function LogSearchTool() {
-  const [logContent, setLogContent] = useState('');
   const [patterns, setPatterns] = useState<SearchPattern[]>([]);
   const [newPattern, setNewPattern] = useState('');
   const [isRegexMode, setIsRegexMode] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [searchMode, setSearchMode] = useState<'simple' | 'logical'>('simple');
-  const [logicalGroups, setLogicalGroups] = useState<LogicalGroup[]>([]);
-  const [globalOperator, setGlobalOperator] = useState<'AND' | 'OR'>('AND');
   const [isMultiFileMode, setIsMultiFileMode] = useState(false);
+  const [showFileSizeWarning, setShowFileSizeWarning] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<FileList | null>(null);
   const [showProcessingNotification, setShowProcessingNotification] = useState(false);
   const { toast } = useToast();
 
   // Use the new hooks
   const fileProcessor = useFileProcessor();
-  const streamingSearch = useStreamingSearch();
+  const searchController = useSearchController();
+  const contentManager = useContentManager();
 
   const addPattern = useCallback(() => {
     if (!newPattern.trim()) return;
@@ -82,45 +76,6 @@ export function LogSearchTool() {
     ));
   }, []);
 
-  // Logical group management
-  const addLogicalGroup = useCallback(() => {
-    const newGroup: LogicalGroup = {
-      id: Date.now().toString(),
-      operator: 'OR',
-      patterns: [],
-      isEnabled: true
-    };
-    setLogicalGroups(prev => [...prev, newGroup]);
-  }, []);
-
-  const removeLogicalGroup = useCallback((groupId: string) => {
-    setLogicalGroups(prev => prev.filter(g => g.id !== groupId));
-  }, []);
-
-  const updateGroupOperator = useCallback((groupId: string, operator: 'AND' | 'OR') => {
-    setLogicalGroups(prev => prev.map(g => 
-      g.id === groupId ? { ...g, operator } : g
-    ));
-  }, []);
-
-  const addPatternToGroup = useCallback((groupId: string, patternId: string) => {
-    setLogicalGroups(prev => prev.map(g => 
-      g.id === groupId ? { ...g, patterns: [...g.patterns, patternId] } : g
-    ));
-  }, []);
-
-  const removePatternFromGroup = useCallback((groupId: string, patternId: string) => {
-    setLogicalGroups(prev => prev.map(g => 
-      g.id === groupId ? { ...g, patterns: g.patterns.filter(p => p !== patternId) } : g
-    ));
-  }, []);
-
-  const toggleLogicalGroup = useCallback((groupId: string) => {
-    setLogicalGroups(prev => prev.map(g => 
-      g.id === groupId ? { ...g, isEnabled: !g.isEnabled } : g
-    ));
-  }, []);
-
   const highlightText = useCallback((content: string, matches: any[]) => {
     if (matches.length === 0) return content;
     
@@ -137,89 +92,71 @@ export function LogSearchTool() {
     return result;
   }, []);
 
-  const handleMultipleFiles = useCallback((files: FileList) => {
-    const fileArray = Array.from(files);
-    let combinedContent = '';
-    let processedFiles = 0;
-
-    toast({
-      title: "Processing multiple files",
-      description: `Processing ${fileArray.length} files...`
-    });
-
-    const processFile = (file: File, index: number) => {
-      const reader = new FileReader();
-      
-      reader.onload = (e) => {
-        const content = e.target?.result as string || '';
-        
-        if (content) {
-          combinedContent += (combinedContent ? '\n' : '') + content;
-        }
-        
-        processedFiles++;
-
-        if (processedFiles === fileArray.length) {
-          const normalizedContent = combinedContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-          const lineCount = normalizedContent.split('\n').filter(line => line.trim() !== '').length;
-          
-          setLogContent(normalizedContent);
-          
-          toast({
-            title: "Multiple files processed",
-            description: `Successfully combined ${fileArray.length} files (${lineCount} lines)`
-          });
-        }
-      };
-      
-      reader.onerror = () => {
-        toast({
-          title: "File processing failed",
-          description: `Failed to process ${file.name}`,
-          variant: "destructive"
-        });
-        processedFiles++;
-      };
-      
-      reader.readAsText(file);
-    };
-
-    fileArray.forEach(processFile);
-  }, [toast]);
+  const checkFileSizes = useCallback((files: FileList) => {
+    const totalSize = Array.from(files).reduce((sum, file) => sum + file.size, 0);
+    const estimatedLines = Math.ceil(totalSize / 100); // Rough estimate
+    const sizeMB = totalSize / (1024 * 1024);
+    
+    if (sizeMB > 10 || estimatedLines > 50000) {
+      setPendingFiles(files);
+      setShowFileSizeWarning(true);
+      return true;
+    }
+    return false;
+  }, []);
 
   const handleFileUpload = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
-    // Handle multiple files
-    if (files.length > 1 || isMultiFileMode) {
-      handleMultipleFiles(files);
+    // Check file sizes first
+    if (checkFileSizes(files)) {
       return;
     }
-    
-    const file = files[0];
-    
+
+    await processFiles(files);
+  }, [checkFileSizes]);
+
+  const processFiles = useCallback(async (files: FileList) => {
     try {
       setShowProcessingNotification(true);
-      const result = await fileProcessor.processFile(file);
+      const result = await fileProcessor.processFiles(files);
       
       const normalizedContent = result.content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-      const lineCount = normalizedContent.split('\n').filter(line => line.trim() !== '').length;
+      contentManager.setContent(normalizedContent);
       
-      setLogContent(normalizedContent);
+      const fileCount = files.length;
+      const description = fileCount > 1 
+        ? `Successfully processed ${fileCount} files`
+        : `Successfully loaded ${files[0].name}`;
       
       toast({
-        title: "File processed successfully",
-        description: `Successfully loaded ${file.name} (${lineCount} lines)`
+        title: "Files processed successfully",
+        description: `${description} (${contentManager.lineCount} lines)`
       });
     } catch (error) {
       console.error('File processing error:', error);
       toast({
         title: "Processing failed",
-        description: error.message || "Failed to process the file",
+        description: error.message || "Failed to process the files",
         variant: "destructive"
       });
+    } finally {
+      setShowProcessingNotification(false);
     }
-  }, [fileProcessor, isMultiFileMode, handleMultipleFiles, toast]);
+  }, [fileProcessor, contentManager, toast]);
+
+  const handleFileSizeWarningContinue = useCallback(() => {
+    setShowFileSizeWarning(false);
+    if (pendingFiles) {
+      processFiles(pendingFiles);
+      setPendingFiles(null);
+    }
+  }, [pendingFiles, processFiles]);
+
+  const handleFileSizeWarningCancel = useCallback(() => {
+    setShowFileSizeWarning(false);
+    setPendingFiles(null);
+  }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -237,17 +174,38 @@ export function LogSearchTool() {
     handleFileUpload(e.dataTransfer.files);
   }, [handleFileUpload]);
 
+  const handleManualSearch = useCallback(() => {
+    const content = contentManager.getFullContent();
+    const result = searchController.triggerSearch(content, patterns, { showWarning: true });
+    
+    if (result?.requiresConfirmation) {
+      toast({
+        title: "Large content detected",
+        description: "Search may take longer due to content size. Click 'Force Search' to continue.",
+        action: (
+          <Button 
+            onClick={() => searchController.forceSearch(content, patterns)}
+            size="sm"
+            variant="outline"
+          >
+            Force Search
+          </Button>
+        )
+      });
+    }
+  }, [contentManager, searchController, patterns, toast]);
+
   const clearContent = useCallback(() => {
-    setLogContent('');
-    streamingSearch.clearResults();
+    contentManager.clearContent();
+    searchController.clearSearch();
     toast({
       title: "Content cleared",
       description: "All content has been cleared."
     });
-  }, [streamingSearch, toast]);
+  }, [contentManager, searchController, toast]);
 
   const exportResults = useCallback(() => {
-    if (streamingSearch.results.length === 0) {
+    if (searchController.results.length === 0) {
       toast({
         title: "No results to export",
         description: "Add some patterns and search content first."
@@ -257,8 +215,8 @@ export function LogSearchTool() {
     
     const exportData = {
       patterns: patterns.filter(p => p.isEnabled),
-      results: streamingSearch.results,
-      totalMatches: streamingSearch.results.reduce((sum, result) => sum + result.matches.length, 0),
+      results: searchController.results,
+      totalMatches: searchController.results.reduce((sum, result) => sum + result.matches.length, 0),
       exportDate: new Date().toISOString()
     };
     
@@ -274,16 +232,9 @@ export function LogSearchTool() {
       title: "Results exported",
       description: "Search results have been downloaded as JSON."
     });
-  }, [streamingSearch.results, patterns, toast]);
+  }, [searchController.results, patterns, toast]);
 
-  // Trigger search when patterns or content change
-  React.useEffect(() => {
-    if (logContent && patterns.some(p => p.isEnabled)) {
-      streamingSearch.searchInChunks(logContent, patterns);
-    }
-  }, [logContent, patterns, streamingSearch]);
-
-  const totalMatches = streamingSearch.results.reduce((sum, result) => sum + result.matches.length, 0);
+  const totalMatches = searchController.results.reduce((sum, result) => sum + result.matches.length, 0);
 
   return (
     <div className="min-h-screen bg-gradient-dark p-6">
@@ -297,6 +248,17 @@ export function LogSearchTool() {
             Advanced pattern matching with streaming processing for large log files
           </p>
         </div>
+
+        {/* File Size Warning */}
+        {showFileSizeWarning && pendingFiles && (
+          <FileSizeWarning
+            files={Array.from(pendingFiles)}
+            totalSize={Array.from(pendingFiles).reduce((sum, file) => sum + file.size, 0)}
+            estimatedLines={Math.ceil(Array.from(pendingFiles).reduce((sum, file) => sum + file.size, 0) / 100)}
+            onContinue={handleFileSizeWarningContinue}
+            onCancel={handleFileSizeWarningCancel}
+          />
+        )}
 
         {/* File Upload & Input */}
         <Card className="shadow-card-custom border-border">
@@ -323,7 +285,7 @@ export function LogSearchTool() {
                 {isMultiFileMode ? 'Drop multiple files here or click to browse' : 'Drop log files here or click to browse'}
               </p>
               <p className="text-sm text-muted-foreground mb-4">
-                No size limits - all files processed in background with streaming
+                Optimized for large files with background processing
               </p>
               <input
                 type="file"
@@ -350,16 +312,37 @@ export function LogSearchTool() {
               </div>
             </div>
 
-            {/* File Management Controls */}
-            {logContent && (
-              <div className="flex gap-2 p-4 bg-muted/30 rounded-lg">
-                <div className="flex-1 text-sm text-muted-foreground">
-                  {logContent.split('\n').filter(line => line.trim() !== '').length} lines loaded
+            {/* Content Management */}
+            {contentManager.content && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between p-4 bg-muted/30 rounded-lg">
+                  <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                    <span>{contentManager.lineCount.toLocaleString()} lines</span>
+                    <span>{(contentManager.sizeBytes / (1024 * 1024)).toFixed(1)} MB</span>
+                    {contentManager.isLarge && (
+                      <Badge variant="outline" className="text-orange-600">
+                        <AlertTriangle className="h-3 w-3 mr-1" />
+                        Large Content
+                      </Badge>
+                    )}
+                    {contentManager.truncated && (
+                      <Badge variant="outline" className="text-blue-600">
+                        Truncated View
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    {contentManager.truncated && (
+                      <Button onClick={contentManager.loadMore} variant="outline" size="sm">
+                        Load Full Content
+                      </Button>
+                    )}
+                    <Button onClick={clearContent} variant="outline" size="sm">
+                      <Trash2 className="h-4 w-4 mr-2" />
+                      Clear Content
+                    </Button>
+                  </div>
                 </div>
-                <Button onClick={clearContent} variant="outline" size="sm">
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  Clear Content
-                </Button>
               </div>
             )}
 
@@ -368,8 +351,8 @@ export function LogSearchTool() {
               <label className="text-sm font-medium">Or paste log content directly:</label>
               <Textarea
                 placeholder="Paste your log content here..."
-                value={logContent}
-                onChange={(e) => setLogContent(e.target.value)}
+                value={contentManager.content}
+                onChange={(e) => contentManager.setContent(e.target.value)}
                 className="min-h-32 font-mono text-sm"
               />
             </div>
@@ -444,11 +427,41 @@ export function LogSearchTool() {
                 </div>
               </div>
             )}
+
+            {/* Search Controls */}
+            <div className="flex items-center gap-4 pt-4 border-t">
+              <Button 
+                onClick={handleManualSearch}
+                disabled={!contentManager.content || patterns.length === 0}
+                className="bg-gradient-primary"
+              >
+                <Play className="h-4 w-4 mr-2" />
+                Start Search
+              </Button>
+              
+              {searchController.isSearching && (
+                <Button 
+                  onClick={searchController.cancelSearch}
+                  variant="outline"
+                >
+                  <Pause className="h-4 w-4 mr-2" />
+                  Cancel Search
+                </Button>
+              )}
+              
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={searchController.autoSearchEnabled}
+                  onCheckedChange={searchController.enableAutoSearch}
+                />
+                <span className="text-sm">Auto-search</span>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
         {/* Search Progress */}
-        {streamingSearch.isSearching && (
+        {searchController.isSearching && (
           <Card className="shadow-card-custom border-border">
             <CardContent className="p-4">
               <div className="flex items-center justify-between mb-2">
@@ -456,14 +469,14 @@ export function LogSearchTool() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={streamingSearch.cancelSearch}
+                  onClick={searchController.cancelSearch}
                 >
                   Cancel
                 </Button>
               </div>
-              <Progress value={streamingSearch.progress} className="mb-2" />
+              <Progress value={searchController.progress} className="mb-2" />
               <div className="text-xs text-muted-foreground">
-                Processed {streamingSearch.processedLines} of {streamingSearch.totalLines} lines
+                Processed {searchController.processedLines} of {searchController.totalLines} lines
               </div>
             </CardContent>
           </Card>
@@ -476,11 +489,11 @@ export function LogSearchTool() {
               Search Results
               {totalMatches > 0 && (
                 <Badge variant="outline" className="bg-accent/20">
-                  {totalMatches} matches in {streamingSearch.results.length} lines
+                  {totalMatches} matches in {searchController.results.length} lines
                 </Badge>
               )}
             </CardTitle>
-            {streamingSearch.results.length > 0 && (
+            {searchController.results.length > 0 && (
               <Button onClick={exportResults} variant="outline" size="sm">
                 <Download className="h-4 w-4 mr-2" />
                 Export Results
@@ -489,7 +502,7 @@ export function LogSearchTool() {
           </CardHeader>
           <CardContent>
             <VirtualScrollResults
-              results={streamingSearch.results}
+              results={searchController.results}
               itemHeight={80}
               containerHeight={400}
               onHighlightText={highlightText}

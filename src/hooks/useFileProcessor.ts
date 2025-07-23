@@ -4,11 +4,20 @@ import { useState, useCallback, useRef } from 'react';
 export interface ProcessingProgress {
   stage: 'reading' | 'decompressing' | 'extracting' | 'complete';
   progress: number;
+  currentFile?: string;
+  fileIndex?: number;
+  totalFiles?: number;
+  warning?: string;
 }
 
 export interface ProcessingResult {
   content: string;
-  type: 'text' | 'gzip' | 'tar';
+  type: 'text' | 'gzip' | 'tar' | 'multi-file';
+  files?: Array<{
+    name: string;
+    content: string;
+    type: string;
+  }>;
 }
 
 export interface ProcessingState {
@@ -77,7 +86,7 @@ export function useFileProcessor() {
     }
   }, []);
 
-  const processFile = useCallback(async (file: File): Promise<ProcessingResult> => {
+  const processFiles = useCallback(async (files: FileList): Promise<ProcessingResult> => {
     initWorker();
     
     return new Promise((resolve, reject) => {
@@ -107,9 +116,9 @@ export function useFileProcessor() {
 
       workerRef.current?.addEventListener('message', handleMessage);
       workerRef.current?.postMessage({
-        type: 'PROCESS_FILE',
+        type: 'PROCESS_FILES',
         id: jobId,
-        data: { file }
+        data: { files: Array.from(files) }
       });
     });
   }, [initWorker]);
@@ -135,7 +144,7 @@ export function useFileProcessor() {
 
   return {
     ...state,
-    processFile,
+    processFiles,
     cancelProcessing,
     reset
   };
