@@ -7,6 +7,7 @@ interface SearchPattern {
   isRegex: boolean;
   isEnabled: boolean;
   color: string;
+  logicalOperator?: 'AND' | 'OR';
 }
 
 interface SearchResult {
@@ -84,9 +85,12 @@ export function useStreamingSearch() {
         chunk.forEach((line, chunkIndex) => {
           const lineIndex = i + chunkIndex;
           const matches: SearchResult['matches'] = [];
+          const patternMatches = new Map<string, boolean>();
 
+          // First pass: find all pattern matches
           enabledPatterns.forEach(pattern => {
             try {
+              let hasMatch = false;
               if (pattern.isRegex) {
                 const regex = new RegExp(pattern.pattern, 'gi');
                 let match;
@@ -97,6 +101,7 @@ export function useStreamingSearch() {
                     start: match.index,
                     end: match.index + match[0].length
                   });
+                  hasMatch = true;
                 }
               } else {
                 let startIndex = 0;
@@ -108,14 +113,20 @@ export function useStreamingSearch() {
                     end: startIndex + pattern.pattern.length
                   });
                   startIndex += pattern.pattern.length;
+                  hasMatch = true;
                 }
               }
+              patternMatches.set(pattern.id, hasMatch);
             } catch (error) {
               console.warn(`Invalid regex pattern: ${pattern.pattern}`);
+              patternMatches.set(pattern.id, false);
             }
           });
 
-          if (matches.length > 0) {
+          // Second pass: apply logical operations
+          const shouldIncludeLine = applyLogicalOperations(enabledPatterns, patternMatches);
+
+          if (shouldIncludeLine && matches.length > 0) {
             matches.sort((a, b) => a.start - b.start);
             results.push({
               lineNumber: lineIndex + 1,
@@ -154,6 +165,32 @@ export function useStreamingSearch() {
         isSearching: false
       }));
     }
+  }, []);
+
+  const applyLogicalOperations = useCallback((
+    patterns: SearchPattern[],
+    patternMatches: Map<string, boolean>
+  ): boolean => {
+    if (patterns.length === 0) return false;
+    if (patterns.length === 1) return patternMatches.get(patterns[0].id) || false;
+
+    // Simple logic: all patterns are connected in sequence
+    // First pattern is always included, subsequent patterns use their operator
+    let result = patternMatches.get(patterns[0].id) || false;
+    
+    for (let i = 1; i < patterns.length; i++) {
+      const pattern = patterns[i];
+      const hasMatch = patternMatches.get(pattern.id) || false;
+      
+      if (pattern.logicalOperator === 'OR') {
+        result = result || hasMatch;
+      } else {
+        // Default AND
+        result = result && hasMatch;
+      }
+    }
+    
+    return result;
   }, []);
 
   const cancelSearch = useCallback(() => {

@@ -8,6 +8,7 @@ interface SearchPattern {
   isRegex: boolean;
   isEnabled: boolean;
   color: string;
+  logicalOperator?: 'AND' | 'OR';
 }
 
 interface SearchControllerState {

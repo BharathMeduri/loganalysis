@@ -1,6 +1,7 @@
 
 // Enhanced Web Worker for background file processing with multi-file support
 importScripts('https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js');
+importScripts('https://unpkg.com/js-untar@2.0.0/dist/untar.js');
 
 class FileProcessor {
   constructor() {
@@ -114,37 +115,46 @@ class FileProcessor {
   async decompressFile(file, options) {
     const { onProgress } = options;
     
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const compressed = new Uint8Array(arrayBuffer);
       
-      reader.onload = async () => {
-        try {
-          const compressed = new Uint8Array(reader.result);
-          
-          if (onProgress) {
-            onProgress({ stage: 'decompressing', progress: 0 });
-          }
-          
-          // Decompress in chunks to avoid blocking
-          const decompressed = await this.decompressInChunks(compressed, onProgress);
-          
-          if (file.name.toLowerCase().includes('.tar')) {
-            // Handle tar files
-            const content = await this.extractTarContents(decompressed, onProgress);
-            resolve({ content, type: 'tar' });
-          } else {
-            // Handle gzip files
-            const content = await this.streamDecode(decompressed, onProgress);
-            resolve({ content, type: 'gzip' });
-          }
-        } catch (error) {
-          reject(error);
-        }
-      };
+      if (onProgress) {
+        onProgress({ stage: 'decompressing', progress: 0 });
+      }
       
-      reader.onerror = () => reject(new Error('Failed to read file'));
-      reader.readAsArrayBuffer(file);
-    });
+      if (file.name.toLowerCase().endsWith('.tar.gz') || file.name.toLowerCase().endsWith('.tgz')) {
+        // Handle tar.gz files with chunked decompression
+        const tarData = await this.chunkedGunzip(compressed, onProgress);
+        const files = await this.extractTarFiles(tarData, onProgress);
+        
+        // Return multi-file result for tar archives
+        return {
+          content: files.map(f => `\n\n=== ${f.name} ===\n${f.content}`).join(''),
+          type: 'tar',
+          isMultiFile: true,
+          files: files
+        };
+      } else if (file.name.toLowerCase().endsWith('.gz')) {
+        // Handle regular .gz files
+        const decompressed = await this.chunkedGunzip(compressed, onProgress);
+        const content = await this.streamDecode(decompressed, onProgress);
+        return { content, type: 'gzip' };
+      } else if (file.name.toLowerCase().endsWith('.tar')) {
+        // Handle uncompressed tar files
+        const files = await this.extractTarFiles(compressed, onProgress);
+        return {
+          content: files.map(f => `\n\n=== ${f.name} ===\n${f.content}`).join(''),
+          type: 'tar',
+          isMultiFile: true,
+          files: files
+        };
+      }
+      
+      throw new Error('Unsupported compressed file format');
+    } catch (error) {
+      throw new Error(`Decompression failed: ${error.message}`);
+    }
   }
 
   async streamDecode(data, onProgress) {
@@ -176,26 +186,94 @@ class FileProcessor {
     return result;
   }
 
-  async decompressInChunks(compressed, onProgress) {
-    try {
-      const decompressed = pako.ungzip(compressed);
-      if (onProgress) {
-        onProgress({ stage: 'decompressing', progress: 100 });
+  async chunkedGunzip(compressed, onProgress) {
+    return new Promise((resolve, reject) => {
+      try {
+        const inflate = new pako.Inflate();
+        const chunkSize = 64 * 1024; // 64KB chunks
+        let progress = 0;
+        
+        const processChunk = (start) => {
+          if (this.shouldCancel) {
+            reject(new Error('Operation cancelled'));
+            return;
+          }
+          
+          const end = Math.min(start + chunkSize, compressed.length);
+          const chunk = compressed.slice(start, end);
+          
+          inflate.push(chunk, end === compressed.length);
+          
+          progress = (end / compressed.length) * 50;
+          if (onProgress) {
+            onProgress({
+              stage: 'decompressing',
+              progress: Math.round(progress)
+            });
+          }
+          
+          if (end < compressed.length) {
+            setTimeout(() => processChunk(end), 10);
+          } else {
+            if (inflate.err) {
+              reject(new Error(inflate.msg));
+            } else {
+              resolve(inflate.result);
+            }
+          }
+        };
+        
+        processChunk(0);
+      } catch (error) {
+        reject(error);
       }
-      return decompressed;
-    } catch (error) {
-      throw new Error(`Decompression failed: ${error.message}`);
-    }
+    });
   }
 
-  async extractTarContents(tarData, onProgress) {
-    const content = await this.streamDecode(tarData, onProgress);
-    
-    if (onProgress) {
-      onProgress({ stage: 'extracting', progress: 100 });
+  async extractTarFiles(tarData, onProgress) {
+    try {
+      if (onProgress) {
+        onProgress({ stage: 'extracting', progress: 0 });
+      }
+      
+      const files = await untar(tarData.buffer);
+      const extractedFiles = [];
+      
+      for (let i = 0; i < files.length; i++) {
+        if (this.shouldCancel) {
+          throw new Error('Operation cancelled');
+        }
+        
+        const file = files[i];
+        
+        // Skip directories
+        if (file.type !== '0' && file.type !== '') {
+          continue;
+        }
+        
+        // Convert file content to text
+        const content = new TextDecoder().decode(file.buffer);
+        extractedFiles.push({
+          name: file.name,
+          content: content,
+          size: file.size
+        });
+        
+        if (onProgress) {
+          onProgress({
+            stage: 'extracting',
+            progress: Math.round(((i + 1) / files.length) * 100)
+          });
+        }
+        
+        // Yield control to prevent blocking
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      
+      return extractedFiles;
+    } catch (error) {
+      throw new Error(`Tar extraction failed: ${error.message}`);
     }
-    
-    return content;
   }
 
   async processRegularFile(file, options) {

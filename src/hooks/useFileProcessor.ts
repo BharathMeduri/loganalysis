@@ -13,6 +13,7 @@ export interface ProcessingProgress {
 export interface ProcessingResult {
   content: string;
   type: 'text' | 'gzip' | 'tar' | 'multi-file';
+  isMultiFile?: boolean;
   files?: Array<{
     name: string;
     content: string;

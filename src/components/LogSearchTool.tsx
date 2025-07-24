@@ -24,6 +24,7 @@ interface SearchPattern {
   isRegex: boolean;
   isEnabled: boolean;
   color: string;
+  logicalOperator?: 'AND' | 'OR';
 }
 
 const PATTERN_COLORS = [
@@ -76,6 +77,15 @@ export function LogSearchTool() {
     ));
   }, []);
 
+  const toggleLogicalOperator = useCallback((id: string) => {
+    setPatterns(prev => prev.map(p => 
+      p.id === id ? { 
+        ...p, 
+        logicalOperator: p.logicalOperator === 'OR' ? 'AND' : 'OR'
+      } : p
+    ));
+  }, []);
+
   const highlightText = useCallback((content: string, matches: any[]) => {
     if (matches.length === 0) return content;
     
@@ -124,10 +134,18 @@ export function LogSearchTool() {
       const normalizedContent = result.content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
       contentManager.setContent(normalizedContent);
       
-      const fileCount = files.length;
-      const description = fileCount > 1 
-        ? `Successfully processed ${fileCount} files`
-        : `Successfully loaded ${files[0].name}`;
+      let fileCount = files.length;
+      let description = "";
+      
+      // Handle multi-file results from tar archives
+      if (result.isMultiFile && result.files) {
+        fileCount = result.files.length;
+        description = `Successfully extracted and processed ${fileCount} files from archive`;
+      } else if (files.length > 1) {
+        description = `Successfully processed ${fileCount} files`;
+      } else {
+        description = `Successfully loaded ${files[0].name}`;
+      }
       
       toast({
         title: "Files processed successfully",
@@ -392,37 +410,48 @@ export function LogSearchTool() {
 
             {/* Active Patterns */}
             {patterns.length > 0 && (
-              <div className="space-y-2">
+              <div className="space-y-3">
                 <h4 className="font-medium">Active Patterns:</h4>
-                <div className="flex flex-wrap gap-2">
-                  {patterns.map((pattern) => (
-                    <Badge
-                      key={pattern.id}
-                      variant="secondary"
-                      className={`flex items-center gap-2 px-3 py-1 ${
-                        pattern.isEnabled ? `bg-${pattern.color}/20 border-${pattern.color}/40` : 'opacity-50'
-                      }`}
-                    >
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => togglePattern(pattern.id)}
-                        className="h-4 w-4 p-0"
+                <div className="space-y-2">
+                  {patterns.map((pattern, index) => (
+                    <div key={pattern.id} className="flex items-center gap-2">
+                      {index > 0 && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => toggleLogicalOperator(pattern.id)}
+                          className="h-6 min-w-[60px] text-xs font-semibold"
+                        >
+                          {pattern.logicalOperator || 'AND'}
+                        </Button>
+                      )}
+                      <Badge
+                        variant="secondary"
+                        className={`flex items-center gap-2 px-3 py-1 ${
+                          pattern.isEnabled ? `bg-${pattern.color}/20 border-${pattern.color}/40` : 'opacity-50'
+                        }`}
                       >
-                        {pattern.isEnabled ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
-                      </Button>
-                      <span className="font-mono text-xs">
-                        {pattern.isRegex ? '/' + pattern.pattern + '/' : pattern.pattern}
-                      </span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => removePattern(pattern.id)}
-                        className="h-4 w-4 p-0 hover:text-destructive"
-                      >
-                        <X className="h-3 w-3" />
-                      </Button>
-                    </Badge>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => togglePattern(pattern.id)}
+                          className="h-4 w-4 p-0"
+                        >
+                          {pattern.isEnabled ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                        </Button>
+                        <span className="font-mono text-xs">
+                          {pattern.isRegex ? '/' + pattern.pattern + '/' : pattern.pattern}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removePattern(pattern.id)}
+                          className="h-4 w-4 p-0 hover:text-destructive"
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      </Badge>
+                    </div>
                   ))}
                 </div>
               </div>
