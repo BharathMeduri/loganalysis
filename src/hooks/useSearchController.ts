@@ -1,13 +1,10 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { useStreamingSearch } from './useStreamingSearch';
+import { SearchPattern } from '@/components/PatternGroup';
 
-interface SearchPattern {
-  id: string;
-  pattern: string;
-  isRegex: boolean;
-  isEnabled: boolean;
-  color: string;
+// Legacy SearchPattern interface for backward compatibility
+interface LegacySearchPattern extends SearchPattern {
   logicalOperator?: 'AND' | 'OR';
 }
 
@@ -37,7 +34,7 @@ export function useSearchController() {
 
   const triggerSearch = useCallback((
     content: string,
-    patterns: SearchPattern[],
+    patterns: SearchPattern[] | LegacySearchPattern[],
     options: { force?: boolean; showWarning?: boolean } = {}
   ) => {
     if (!state.isSearchEnabled && !options.force) return;
@@ -76,7 +73,7 @@ export function useSearchController() {
     return { requiresConfirmation: false };
   }, [state.isSearchEnabled, streamingSearch, shouldWarnLargeContent]);
 
-  const forceSearch = useCallback((content: string, patterns: SearchPattern[]) => {
+  const forceSearch = useCallback((content: string, patterns: SearchPattern[] | LegacySearchPattern[]) => {
     triggerSearch(content, patterns, { force: true });
   }, [triggerSearch]);
 

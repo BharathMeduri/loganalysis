@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useMemo } from 'react';
-import { Upload, Search, X, FileText, Download, Eye, EyeOff, Plus, Trash2, Code, Split, AlertTriangle, Play, Pause } from 'lucide-react';
+import { Upload, Search, X, FileText, Download, Eye, EyeOff, Plus, Trash2, Code, Split, AlertTriangle, Play, Pause, Group } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -14,11 +14,14 @@ import { useToast } from '@/hooks/use-toast';
 import { useFileProcessor } from '@/hooks/useFileProcessor';
 import { useSearchController } from '@/hooks/useSearchController';
 import { useContentManager } from '@/hooks/useContentManager';
+import { usePatternGroups } from '@/hooks/usePatternGroups';
 import { ProcessingNotification } from '@/components/ProcessingNotification';
 import { VirtualScrollResults } from '@/components/VirtualScrollResults';
 import { FileSizeWarning } from '@/components/FileSizeWarning';
+import { PatternGroup } from '@/components/PatternGroup';
 
-interface SearchPattern {
+// Legacy interface for backward compatibility
+interface LegacySearchPattern {
   id: string;
   pattern: string;
   isRegex: boolean;
@@ -32,7 +35,7 @@ const PATTERN_COLORS = [
 ];
 
 export function LogSearchTool() {
-  const [patterns, setPatterns] = useState<SearchPattern[]>([]);
+  const [patterns, setPatterns] = useState<LegacySearchPattern[]>([]);
   const [newPattern, setNewPattern] = useState('');
   const [isRegexMode, setIsRegexMode] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -40,33 +43,48 @@ export function LogSearchTool() {
   const [showFileSizeWarning, setShowFileSizeWarning] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<FileList | null>(null);
   const [showProcessingNotification, setShowProcessingNotification] = useState(false);
+  const [usePatternGrouping, setUsePatternGrouping] = useState(false);
   const { toast } = useToast();
 
   // Use the new hooks
   const fileProcessor = useFileProcessor();
   const searchController = useSearchController();
   const contentManager = useContentManager();
+  const patternGroups = usePatternGroups();
 
   const addPattern = useCallback(() => {
     if (!newPattern.trim()) return;
     
-    const pattern: SearchPattern = {
-      id: Date.now().toString(),
-      pattern: newPattern.trim(),
-      isRegex: isRegexMode,
-      isEnabled: true,
-      color: PATTERN_COLORS[patterns.length % PATTERN_COLORS.length],
-      logicalOperator: patterns.length > 0 ? 'AND' : undefined
-    };
+    if (usePatternGrouping) {
+      // Add to first group or create new group if none exists
+      if (patternGroups.groups.length === 0) {
+        const groupId = patternGroups.createGroup();
+        patternGroups.addPatternToGroup(groupId, newPattern.trim(), isRegexMode);
+      } else {
+        // Add to the first group for simplicity
+        patternGroups.addPatternToGroup(patternGroups.groups[0].id, newPattern.trim(), isRegexMode);
+      }
+    } else {
+      // Legacy mode
+      const pattern: LegacySearchPattern = {
+        id: Date.now().toString(),
+        pattern: newPattern.trim(),
+        isRegex: isRegexMode,
+        isEnabled: true,
+        color: PATTERN_COLORS[patterns.length % PATTERN_COLORS.length],
+        logicalOperator: patterns.length > 0 ? 'AND' : undefined
+      };
+      
+      setPatterns(prev => [...prev, pattern]);
+    }
     
-    setPatterns(prev => [...prev, pattern]);
     setNewPattern('');
     
     toast({
       title: "Pattern added",
       description: `${isRegexMode ? 'Regex' : 'Text'} pattern "${newPattern}" added successfully.`
     });
-  }, [newPattern, isRegexMode, patterns.length, toast]);
+  }, [newPattern, isRegexMode, patterns.length, toast, usePatternGrouping, patternGroups]);
 
   const removePattern = useCallback((id: string) => {
     setPatterns(prev => prev.filter(p => p.id !== id));
@@ -195,7 +213,8 @@ export function LogSearchTool() {
 
   const handleManualSearch = useCallback(() => {
     const content = contentManager.getFullContent();
-    const result = searchController.triggerSearch(content, patterns, { showWarning: true });
+    const searchPatterns = usePatternGrouping ? patternGroups.getAllEnabledPatterns() : patterns;
+    const result = searchController.triggerSearch(content, searchPatterns, { showWarning: true });
     
     if (result?.requiresConfirmation) {
       toast({
@@ -203,7 +222,7 @@ export function LogSearchTool() {
         description: "Search may take longer due to content size. Click 'Force Search' to continue.",
         action: (
           <Button 
-            onClick={() => searchController.forceSearch(content, patterns)}
+            onClick={() => searchController.forceSearch(content, searchPatterns)}
             size="sm"
             variant="outline"
           >
@@ -212,7 +231,7 @@ export function LogSearchTool() {
         )
       });
     }
-  }, [contentManager, searchController, patterns, toast]);
+  }, [contentManager, searchController, patterns, toast, usePatternGrouping, patternGroups]);
 
   const clearContent = useCallback(() => {
     contentManager.clearContent();
@@ -232,8 +251,13 @@ export function LogSearchTool() {
       return;
     }
     
+    const exportPatterns = usePatternGrouping 
+      ? patternGroups.getAllEnabledPatterns()
+      : patterns.filter(p => p.isEnabled);
+    
     const exportData = {
-      patterns: patterns.filter(p => p.isEnabled),
+      patterns: exportPatterns,
+      groups: usePatternGrouping ? patternGroups.groups : undefined,
       results: searchController.results,
       totalMatches: searchController.results.reduce((sum, result) => sum + result.matches.length, 0),
       exportDate: new Date().toISOString()
@@ -251,9 +275,12 @@ export function LogSearchTool() {
       title: "Results exported",
       description: "Search results have been downloaded as JSON."
     });
-  }, [searchController.results, patterns, toast]);
+  }, [searchController.results, patterns, toast, usePatternGrouping, patternGroups]);
 
   const totalMatches = searchController.results.reduce((sum, result) => sum + result.matches.length, 0);
+  const activePatternCount = usePatternGrouping 
+    ? patternGroups.getAllEnabledPatterns().length
+    : patterns.filter(p => p.isEnabled).length;
 
   return (
     <div className="min-h-screen bg-gradient-dark p-6">
@@ -384,6 +411,11 @@ export function LogSearchTool() {
             <CardTitle className="flex items-center gap-2">
               <Search className="h-5 w-5 text-primary" />
               Search Patterns
+              <Switch
+                checked={usePatternGrouping}
+                onCheckedChange={setUsePatternGrouping}
+              />
+              <span className="text-sm">Group Mode</span>
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -405,64 +437,98 @@ export function LogSearchTool() {
                 <span className="text-sm">Regex</span>
               </div>
               <Button onClick={addPattern} className="bg-gradient-primary">
+                <Plus className="h-4 w-4 mr-2" />
                 Add Pattern
               </Button>
+              {usePatternGrouping && (
+                <Button onClick={patternGroups.createGroup} variant="outline">
+                  <Group className="h-4 w-4 mr-2" />
+                  New Group
+                </Button>
+              )}
             </div>
 
-            {/* Active Patterns */}
-            {patterns.length > 0 && (
-              <div className="space-y-3">
-                <h4 className="font-medium">Active Patterns:</h4>
-                <div className="space-y-2">
-                  {patterns.map((pattern, index) => (
-                    <div key={pattern.id} className="flex items-center gap-2">
-                      {index > 0 && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => toggleLogicalOperator(pattern.id)}
-                          className="h-6 min-w-[60px] text-xs font-semibold"
-                        >
-                          {pattern.logicalOperator || 'AND'}
-                        </Button>
-                      )}
-                      <Badge
-                        variant="secondary"
-                        className={`flex items-center gap-2 px-3 py-1 ${
-                          pattern.isEnabled ? `bg-${pattern.color}/20 border-${pattern.color}/40` : 'opacity-50'
-                        }`}
-                      >
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => togglePattern(pattern.id)}
-                          className="h-4 w-4 p-0"
-                        >
-                          {pattern.isEnabled ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
-                        </Button>
-                        <span className="font-mono text-xs">
-                          {pattern.isRegex ? '/' + pattern.pattern + '/' : pattern.pattern}
-                        </span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => removePattern(pattern.id)}
-                          className="h-4 w-4 p-0 hover:text-destructive"
-                        >
-                          <X className="h-3 w-3" />
-                        </Button>
-                      </Badge>
+            {/* Pattern Groups or Legacy Patterns */}
+            {usePatternGrouping ? (
+              <div className="space-y-4">
+                {patternGroups.groups.length > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="font-medium">Pattern Groups:</h4>
+                    <div className="space-y-4">
+                      {patternGroups.groups.map((group, index) => (
+                        <PatternGroup
+                          key={group.id}
+                          group={group}
+                          groupIndex={index}
+                          totalGroups={patternGroups.groups.length}
+                          onToggleGroup={patternGroups.toggleGroup}
+                          onTogglePattern={patternGroups.togglePatternInGroup}
+                          onRemovePattern={patternGroups.removePatternFromGroup}
+                          onRemoveGroup={patternGroups.removeGroup}
+                          onUpdateGroupOperator={patternGroups.updateGroupOperator}
+                          onUpdateGroupBetweenOperator={patternGroups.updateGroupBetweenOperator}
+                          groupBetweenOperator={patternGroups.getGroupBetweenOperator(group.id)}
+                        />
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </div>
+                )}
               </div>
+            ) : (
+              patterns.length > 0 && (
+                <div className="space-y-3">
+                  <h4 className="font-medium">Active Patterns:</h4>
+                  <div className="space-y-2">
+                    {patterns.map((pattern, index) => (
+                      <div key={pattern.id} className="flex items-center gap-2">
+                        {index > 0 && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => toggleLogicalOperator(pattern.id)}
+                            className="h-6 min-w-[60px] text-xs font-semibold"
+                          >
+                            {pattern.logicalOperator || 'AND'}
+                          </Button>
+                        )}
+                        <Badge
+                          variant="secondary"
+                          className={`flex items-center gap-2 px-3 py-1 ${
+                            pattern.isEnabled ? `bg-${pattern.color}/20 border-${pattern.color}/40` : 'opacity-50'
+                          }`}
+                        >
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => togglePattern(pattern.id)}
+                            className="h-4 w-4 p-0"
+                          >
+                            {pattern.isEnabled ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                          </Button>
+                          <span className="font-mono text-xs">
+                            {pattern.isRegex ? '/' + pattern.pattern + '/' : pattern.pattern}
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => removePattern(pattern.id)}
+                            className="h-4 w-4 p-0 hover:text-destructive"
+                          >
+                            <X className="h-3 w-3" />
+                          </Button>
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
             )}
 
             {/* Search Controls */}
             <div className="flex items-center gap-4 pt-4 border-t">
               <Button 
                 onClick={handleManualSearch}
-                disabled={!contentManager.content || patterns.length === 0}
+                disabled={!contentManager.content || activePatternCount === 0}
                 className="bg-gradient-primary"
               >
                 <Play className="h-4 w-4 mr-2" />
