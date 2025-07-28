@@ -55,7 +55,8 @@ export function LogSearchTool() {
       pattern: newPattern.trim(),
       isRegex: isRegexMode,
       isEnabled: true,
-      color: PATTERN_COLORS[patterns.length % PATTERN_COLORS.length]
+      color: PATTERN_COLORS[patterns.length % PATTERN_COLORS.length],
+      logicalOperator: patterns.length > 0 ? 'AND' : undefined
     };
     
     setPatterns(prev => [...prev, pattern]);
