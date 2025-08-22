@@ -90,7 +90,7 @@ export function useFileProcessor() {
   const processFiles = useCallback(async (files: FileList): Promise<ProcessingResult> => {
     initWorker();
     
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       const jobId = Math.random().toString(36).substr(2, 9);
       currentJobId.current = jobId;
       
@@ -101,26 +101,59 @@ export function useFileProcessor() {
         result: null
       });
 
-      const handleMessage = (e: MessageEvent) => {
-        const { type, id, data } = e.data;
-        
-        if (id !== jobId) return;
-        
-        if (type === 'SUCCESS') {
-          workerRef.current?.removeEventListener('message', handleMessage);
-          resolve(data);
-        } else if (type === 'ERROR') {
-          workerRef.current?.removeEventListener('message', handleMessage);
-          reject(new Error(data.message));
-        }
-      };
+      try {
+        // Convert files to ArrayBuffer with metadata
+        const fileData = await Promise.all(
+          Array.from(files).map(async (file, index) => {
+            setState(prev => ({
+              ...prev,
+              progress: {
+                stage: 'reading',
+                progress: Math.round((index / files.length) * 50),
+                currentFile: file.name
+              }
+            }));
+            
+            const arrayBuffer = await file.arrayBuffer();
+            return {
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              lastModified: file.lastModified,
+              buffer: arrayBuffer
+            };
+          })
+        );
 
-      workerRef.current?.addEventListener('message', handleMessage);
-      workerRef.current?.postMessage({
-        type: 'PROCESS_FILES',
-        id: jobId,
-        data: { files: Array.from(files) }
-      });
+        const handleMessage = (e: MessageEvent) => {
+          const { type, id, data } = e.data;
+          
+          if (id !== jobId) return;
+          
+          if (type === 'SUCCESS') {
+            workerRef.current?.removeEventListener('message', handleMessage);
+            resolve(data);
+          } else if (type === 'ERROR') {
+            workerRef.current?.removeEventListener('message', handleMessage);
+            reject(new Error(data.message));
+          }
+        };
+
+        workerRef.current?.addEventListener('message', handleMessage);
+        workerRef.current?.postMessage({
+          type: 'PROCESS_FILES',
+          id: jobId,
+          data: { files: fileData }
+        });
+        
+      } catch (error) {
+        setState(prev => ({
+          ...prev,
+          isProcessing: false,
+          error: error instanceof Error ? error.message : 'Failed to read files'
+        }));
+        reject(error);
+      }
     });
   }, [initWorker]);
 
